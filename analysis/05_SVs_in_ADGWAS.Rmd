@@ -1,0 +1,591 @@
+---
+title: "SV GWAS with AD/ADRD traits"
+subtitle: "SVs in LOAD GWAS loci"
+author:  |
+ | Ricardo A. Vialle
+ | Katia de Paiva Lopes
+ |
+ | Rush Alzheimer’s Disease Center
+ | Chicago, IL 60612
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: spacelab
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(vcfR)
+library(data.table)
+library(ggrepel)
+library(ggsci)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{css zoom-lib-src, echo = FALSE, eval=F}
+script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"
+```
+
+```{js zoom-jquery, echo = FALSE}
+ $(document).ready(function() {
+    $('body').prepend('<div class=\"zoomDiv\"><img src=\"\" class=\"zoomImg\"></div>');
+    // onClick function for all plots (img's)
+    $('img:not(.zoomImg)').click(function() {
+      $('.zoomImg').attr('src', $(this).attr('src')).css({width: '100%'});
+      $('.zoomDiv').css({opacity: '1', width: 'auto', border: '1px solid white', borderRadius: '5px', position: 'fixed', top: '50%', left: '50%', marginRight: '-50%', transform: 'translate(-50%, -50%)', boxShadow: '0px 0px 50px #888888', zIndex: '50', overflow: 'auto', maxHeight: '100%'});
+    });
+    // onClick function for zoomImg
+    $('img.zoomImg').click(function() {
+      $('.zoomDiv').css({opacity: '0', width: '0%'}); 
+    });
+  });
+```
+
+```{r setup, include=FALSE}
+root.dir = "~/projects/ADRD_SV_GWAS/"
+runID = "run_20230209"
+
+data.dir = paste0(root.dir,runID,"/")
+load(paste0(data.dir,"ROSMAP_SV_4_association.RData"))
+load(paste0(data.dir,"SV_pheno_list.RData"))
+```
+
+```{r Helper Functions, echo=FALSE}
+source(paste0(data.dir,"/lib/plot_functions.R"))
+source(paste0(data.dir,"/lib/support_functions.R"))
+```
+
+## Load data
+
+```{r load_data, echo=FALSE}
+res_ROS = fread(file = paste0(data.dir,"/","ROS_SVs","/association_results.tsv.gz"))
+res_ROS %>% filter(pheno %in% rownames(pheno_data)) -> res_ROS
+res_MAP = fread(file = paste0(data.dir,"/","MAP_SVs","/association_results.tsv.gz"))
+res_MAP %>% filter(pheno %in% rownames(pheno_data)) -> res_MAP
+res_META = fread(file = paste0(data.dir,"/Meta_analysis_results.tsv.gz")) %>% 
+  filter(pheno %in% rownames(pheno_data))
+res_ROSMAP = res_META %>% select(ID, pheno, BETA_RE, STD_RE, PVALUE_RE2)
+colnames(res_ROSMAP) = c("ID","pheno","Estimate","Std. Error","pval")
+
+## Loading AD loci
+gwas_ad = fread("/pastel/resources/GWAS/adgwas_loci.csv",sep=",")
+
+# Loci by gene name
+gwas_genes = na.omit(unique(c("APOE", gsub(" gene cluster","",unlist(str_split(gwas_ad$gencode_gene,"/"))))))
+```
+
+```{r, fig.width=25, fig.height=6}
+# Group by locus and fix APOE missing Pvalues
+gwas_ad$logP = ifelse(gwas_ad$P == 0, 300, -log10(gwas_ad$P))
+
+gwas_ad_grouped = gwas_ad %>% 
+  filter(locus != "chr19:44851516-46741841") %>% # Remove APOE
+  group_by(locus) %>% 
+  arrange(-OR) %>% 
+  slice_head(n=1) %>%
+  mutate(locus_name = paste0(locus," (", gencode_gene,")"))
+
+gwas_ad_apoe = gwas_ad %>% 
+  filter(locus == "chr19:44851516-46741841" & study == "Bellenguez") %>% 
+  mutate(P = ifelse(P == 0, 1e-300, P)) %>%
+  mutate(GENE = ifelse(is.na(GENE), "APOE", GENE)) %>%
+  arrange(-OR,P) %>%
+  slice_head(n=1) %>%
+  #filter(locus == "chr19:44851516-46741841" & is.na(dbsnp_gene)) %>% 
+  group_by(GENE) %>%
+  mutate(locus_name = paste0(locus," (", gencode_gene,")"))
+
+gwas_ad_grouped = rbind(gwas_ad_grouped, gwas_ad_apoe) %>% 
+  arrange(CHR, BP)
+
+gwas_ad_grouped$locus_chr = as.numeric(gsub("chr","",gsub("(.*?):(.*?)-(.*)","\\1",gwas_ad_grouped$locus)))
+gwas_ad_grouped$locus_start = as.numeric(gsub("(.*?):(.*?)-(.*)","\\2",gwas_ad_grouped$locus))
+gwas_ad_grouped$locus_end = as.numeric(gsub("(.*?):(.*?)-(.*)","\\3",gwas_ad_grouped$locus))
+gwas_ad_grouped$locus_len = gwas_ad_grouped$locus_end - gwas_ad_grouped$locus_start
+```
+
+## SVs in AD GWAS loci
+
+```{r eval=F}
+res_ROS$sv_chr = as.numeric(gsub("chr","",gsub("(.*?) (.*?):(.*?) (.*)","\\2",res_ROS$sv_info)))
+res_ROS$sv_pos = as.numeric(gsub("(.*?) (.*?):(.*?) (.*)","\\3",res_ROS$sv_info))
+res_MAP$sv_chr = as.numeric(gsub("chr","",gsub("(.*?) (.*?):(.*?) (.*)","\\2",res_MAP$sv_info)))
+res_MAP$sv_pos = as.numeric(gsub("(.*?) (.*?):(.*?) (.*)","\\3",res_MAP$sv_info))
+
+# Checking each locus for SVs in LD
+DiscROS = data.frame()
+DiscMAP = data.frame()
+for(locus in unique(gwas_ad_grouped$locus)){
+  #locus = unique(gwas_ad_grouped$locus)[1]
+  gwas_ad_grouped_locus = unique(gwas_ad_grouped[gwas_ad_grouped$locus == locus,c("locus","locus_chr","locus_start","locus_end","SNP","BP","logP")])
+  gwas_ad_grouped_locus = gwas_ad_grouped_locus %>% slice_max(order_by = logP, n = 1) %>% head(n = 1)
+  
+  ROS_svs_in_gwas_locus = res_ROS$sv_chr == gwas_ad_grouped_locus$locus_chr & res_ROS$sv_pos >= gwas_ad_grouped_locus$locus_start & res_ROS$sv_pos <= gwas_ad_grouped_locus$locus_end
+  MAP_svs_in_gwas_locus = res_MAP$sv_chr == gwas_ad_grouped_locus$locus_chr & res_MAP$sv_pos >= gwas_ad_grouped_locus$locus_start & res_MAP$sv_pos <= gwas_ad_grouped_locus$locus_end
+  
+  DiscROS_tmp = res_ROS[ROS_svs_in_gwas_locus,] 
+  DiscMAP_tmp = res_MAP[MAP_svs_in_gwas_locus,] 
+  
+  DiscROS_tmp$locus = locus
+  DiscMAP_tmp$locus = locus
+  
+  if(locus != "chr19:44851516-46741841"){
+    DiscROS_tmp$gwas_SNP = gwas_ad_grouped_locus$SNP
+    DiscROS_tmp$gwas_POS = gwas_ad_grouped_locus$BP
+    DiscMAP_tmp$gwas_SNP = gwas_ad_grouped_locus$SNP
+    DiscMAP_tmp$gwas_POS = gwas_ad_grouped_locus$BP
+  }else{
+    DiscROS_tmp$gwas_SNP = "rs429358"
+    DiscROS_tmp$gwas_POS = 45411941
+    DiscMAP_tmp$gwas_SNP = "rs429358"
+    DiscMAP_tmp$gwas_POS = 45411941
+  }
+  DiscROS = bind_rows(DiscROS,DiscROS_tmp)
+  DiscMAP = bind_rows(DiscMAP,DiscMAP_tmp)
+}
+
+replROSMAP = DiscROS[,c("locus","gwas_SNP","gwas_POS","sv_pos","ID","pheno","sv_info","closest_gene","Estimate","Std. Error","pval")] %>% 
+  inner_join(DiscMAP[,c("ID","pheno","Estimate","Std. Error","pval")], by = c("ID","pheno"), suffix = c(".ROS",".MAP")) %>%
+  left_join(res_ROSMAP[,c("ID","pheno","Estimate","Std. Error","pval")]) #%>% filter(pval <= 5e-3)
+replROSMAP$pval_filt = replROSMAP$pval <= 5e-3
+replROSMAP$prioritized = replROSMAP$pval_filt & (sign(replROSMAP$Estimate.ROS) == sign(replROSMAP$Estimate.MAP) & sign(replROSMAP$Estimate.MAP) == sign(replROSMAP$Estimate))
+
+#length(unique(replROSMAP$ID)) # 796 SVs in 81 AD GWAS Loci
+#sum(replROSMAP$pval_filt, na.rm = T) # 96 SVs with pval <= 5e-3 
+#sum(replROSMAP$prioritized, na.rm = T) # 90 SVs with pval <= 5e-3 and same direction of effect in both cohorts
+
+# Calc distance between SV and GWAS SNP
+replROSMAP$dist_SV_gwasSNP = abs(replROSMAP$sv_pos - replROSMAP$gwas_POS)
+
+# Gather LD information
+ld_all = read.table(paste0("/pastel/resources/SVs/ld_sv_snv.tsv.gz"), header = T)
+# Remove rows with self LD
+ld_all2 = ld_all[!grepl("ALU|DEL|DUP|INS|LIN|SVA", ld_all$snv_id),]
+ld_svs_top = ld_all2 %>% 
+  filter(sv_id %in% replROSMAP$ID) %>% 
+  group_by(sv_id) %>% 
+  arrange(-r2, .by_group = T) %>% 
+  mutate(LD = paste0(snv_id," (",r2,")"))
+ld_svs_top = ld_svs_top[ld_svs_top$r2>0,]
+
+# Check if SV is in LD with GWAS SNP
+replROSMAP$gwasAD_LD = NA
+replROSMAP$gwasAD_LD_R2 = NA
+for(i in 1:nrow(replROSMAP)){
+  replROSMAP_i = replROSMAP[i,]
+  ld_svs_top_i = ld_svs_top[ld_svs_top$sv_id == replROSMAP_i$ID,]
+  ld_svs_top_match = ld_svs_top_i[ld_svs_top_i$snv_id %in% replROSMAP_i$gwas_SNP,]
+  if(nrow(ld_svs_top_match) > 0){
+    replROSMAP$gwasAD_LD[i] = ld_svs_top_match$LD
+    replROSMAP$gwasAD_LD_R2[i] = ld_svs_top_match$r2
+  }
+}
+
+## Collect xQTL information
+eQTL = fread("/pastel/projects/sv_and_resilience/xQTL/SVeQTL_ROSMAP_DLPFC_nominal.tsv.gz")
+haQTL = fread("/pastel/projects/sv_and_resilience/xQTL/SVhaQTL_ROSMAP_DLPFC_nominal.tsv.gz")
+pQTL = fread("/pastel/projects/sv_and_resilience/xQTL/SVpQTL_ROSMAP_DLPFC_nominal.tsv.gz")
+sQTL = fread("/pastel/projects/sv_and_resilience/xQTL/SVsQTL_ROSMAP_DLPFC_nominal.tsv.gz")
+
+eQTL$fdr = p.adjust(eQTL$bpval, method = "fdr")
+haQTL$fdr = p.adjust(haQTL$bpval, method = "fdr")
+pQTL$fdr = p.adjust(pQTL$bpval, method = "fdr")
+sQTL$fdr = p.adjust(sQTL$bpval, method = "fdr")
+
+# sum(eQTL$fdr<=0.05,na.rm = T) # 3191
+# sum(haQTL$fdr<=0.05,na.rm = T) # 1454
+# sum(pQTL$fdr<=0.05,na.rm = T) # 391
+# sum(sQTL$fdr<=0.05,na.rm = T) # 2816
+
+eQTL = eQTL[eQTL$fdr<=0.05,]
+haQTL = haQTL[haQTL$fdr<=0.05,]
+pQTL = pQTL[pQTL$fdr<=0.05,]
+sQTL = sQTL[sQTL$fdr<=0.05,]
+
+eQTL_sel = eQTL[eQTL$variant %in% unique(replROSMAP$ID),] %>% mutate(xQTL = "eQTL") %>% as.data.frame()
+haQTL_sel = haQTL[haQTL$variant %in% unique(replROSMAP$ID),] %>% mutate(xQTL = "haQTL") %>% as.data.frame()
+pQTL_sel = pQTL[pQTL$variant %in% unique(replROSMAP$ID),] %>% mutate(xQTL = "pQTL") %>% as.data.frame()
+sQTL_sel = sQTL[sQTL$variant %in% unique(replROSMAP$ID),] %>% mutate(xQTL = "sQTL") %>% as.data.frame()
+
+column_sel = c("gene_name","phenotype","variant","lead_variant","cor","nom_pval","slope","bpval","xQTL")
+cis_xQTL = bind_rows(eQTL_sel[,column_sel], 
+                     haQTL_sel[,column_sel], 
+                     pQTL_sel[,column_sel], 
+                     sQTL_sel[,column_sel]) %>%
+  mutate(bonferroni = p.adjust(bpval, method = "bonferroni"))
+cis_xQTL_bySV = cis_xQTL %>%
+  group_by(variant) %>%
+  summarise(nom_pval = min(nom_pval),
+            bonferroni = min(bonferroni,na.rm = T),
+            xQTL = length(unique(xQTL)),
+            xQTL_pheno = paste0(unique(xQTL), collapse = ", "))
+
+replROSMAP %>% left_join(cis_xQTL_bySV, by = c("ID" = "variant")) -> replROSMAP
+
+save(replROSMAP, file = paste0(data.dir, "SVs_in_AD_GWAS.RData"))
+``` 
+
+Prioritizing best SVs in each locus
+
+```{r}
+load(paste0(data.dir, "SVs_in_AD_GWAS.RData"))
+# length(unique(replROSMAP$locus)) # 81 loci
+# length(unique(replROSMAP$ID)) # 796 SVs 
+# length(unique(replROSMAP$ID[!is.na(replROSMAP$gwasAD_LD_R2)])) # 36 SVs in LD with GWAS SNPs
+
+best_SVs_in_AD_GWAS_loci = replROSMAP %>% group_by(locus) %>%
+  reframe(SV_best_P = pval[which.min(pval)],
+          SV_best = ID[which.min(pval)],
+          Pheno_best = pheno[which.min(pval)])
+
+# Prioritize by R2 
+replROSMAP %>% 
+  filter(!is.na(gwasAD_LD_R2)) %>%
+  group_by(locus) %>% 
+  reframe(
+    n_SV = length(unique(ID)), # Total number of SVs in the locus
+    SVs = paste0(unique(ID), collapse = ", "), # List of SVs in the locus
+    
+    # Prioritized SVs (association with at least one ADRD trait , p < 5e-3)
+    n_SV_associated_with_Pheno = length(na.omit(unique(ID[prioritized]))), # Number of SVs associated with some ADRD phenotype (pval < 5e-3)
+    SV_prioritized = paste0(na.omit(unique(ID[prioritized])), collapse = ", "), # List of SVs associated with some ADRD phenotype (pval < 5e-3)
+    n_Pheno_prioritized = length(na.omit(unique(pheno[prioritized]))), # Number of ADRD phenotypes associated with these selected SV (pval < 5e-3)
+    Phenos_prioritized = paste0(na.omit(unique(pheno[prioritized])), collapse = ", "), # List of ADRD phenotypes associated with these selected SV (pval < 5e-3)
+    
+    # SV with the highest R2 
+    best_SV = ID[which.min(pval)], # SV with the highest R2
+    best_R2 = gwasAD_LD_R2[which.max(gwasAD_LD_R2)], # R2 of the SV with the lowest Pvalue
+    best_pheno = pheno[which.min(pval)], # ADRD phenotype with the highest R2
+    best_Pval = pval[which.min(pval)], # Pvalue of the SV with the highest R2
+    SV_is_xQTL = xQTL[which.min(pval)], # Is the SV with the highest R2 a xQTL?
+    SV_is_also_prioritized = prioritized[which.min(pval)] # Is the SV with the highest R2 also prioritized?
+    ) %>% distinct() -> gwas_ad_grouped_SVinfo_R2 
+
+# Prioritize by Pvalue
+replROSMAP %>% 
+  filter(!locus %in% gwas_ad_grouped_SVinfo_R2$locus) %>%
+  group_by(locus) %>%
+  reframe(n_SV = length(unique(ID)),
+    n_SV = length(unique(ID)), # Total number of SVs in the locus
+    SVs = paste0(unique(ID), collapse = ", "), # List of SVs in the locus
+    
+    # Prioritized SVs (association with at least one ADRD trait , p < 5e-3)
+    n_SV_associated_with_Pheno = length(na.omit(unique(ID[prioritized]))), # Number of SVs associated with some ADRD phenotype (pval < 5e-3)
+    SV_prioritized = paste0(na.omit(unique(ID[prioritized])), collapse = ", "), # List of SVs associated with some ADRD phenotype (pval < 5e-3)
+    n_Pheno_prioritized = length(na.omit(unique(pheno[prioritized]))), # Number of ADRD phenotypes associated with these selected SV (pval < 5e-3)
+    Phenos_prioritized = paste0(na.omit(unique(pheno[prioritized])), collapse = ", "), # List of ADRD phenotypes associated with these selected SV (pval < 5e-3)
+    
+    # SV with the highest R2 
+    best_SV = ID[which.min(pval)], # SV with lowest Pvalue
+    best_R2 = gwasAD_LD_R2[which.min(pval)], # R2 of the SV with the lowest Pvalue
+    best_pheno = pheno[which.min(pval)], # ADRD phenotype with the lowest Pvalue
+    best_Pval = pval[which.min(pval)], # Pvalue of the SV with the lowest Pvalue
+    SV_is_xQTL = xQTL[which.min(pval)], # Is the SV with the lowest Pvalue a xQTL?
+    SV_is_also_prioritized = prioritized[which.min(pval)] # Is the SV with the lowest Pvalue also prioritized?
+  ) %>% distinct() -> gwas_ad_grouped_SVinfo_Pval
+
+gwas_ad_grouped_SVinfo = bind_rows(gwas_ad_grouped_SVinfo_R2, gwas_ad_grouped_SVinfo_Pval) %>% 
+  right_join(gwas_ad_grouped) %>%
+  arrange(CHR,locus_start) %>% distinct()
+
+gwas_ad_grouped_SVinfo$n_SV_associated_with_Pheno[gwas_ad_grouped_SVinfo$n_SV_associated_with_Pheno == 0] = NA
+gwas_ad_grouped_SVinfo$best_R2 = ifelse(gwas_ad_grouped_SVinfo$SV_is_also_prioritized, gwas_ad_grouped_SVinfo$best_R2, NA)
+gwas_ad_grouped_SVinfo$SV_is_xQTL = ifelse(gwas_ad_grouped_SVinfo$SV_is_also_prioritized, gwas_ad_grouped_SVinfo$SV_is_xQTL, NA)
+
+gwas_ad_grouped_SVinfo_tmp = replROSMAP %>%
+  group_by(locus) %>%
+  reframe(n_SV = length(unique(ID))) # Total number of SVs in the locus
+  
+gwas_ad_grouped_SVinfo_tmp2 = replROSMAP %>%
+  filter(prioritized) %>%
+  group_by(locus) %>%
+  reframe(n_SV_associated_with_Pheno = length(unique(ID))) %>% # Number of SVs associated with some ADRD phenotype (pval < 5e-3)
+  distinct()
+
+gwas_ad_grouped_SVinfo_tmp3 = replROSMAP %>%
+#  filter(prioritized) %>%
+  filter(!is.na(gwasAD_LD_R2)) %>%
+  group_by(locus) %>%
+  reframe(best_SV = ID[which.max(gwasAD_LD_R2)],
+          best_pheno = pheno[which.max(gwasAD_LD_R2)], 
+          best_Pval =  pval[which.max(gwasAD_LD_R2)],
+          best_R2 = gwasAD_LD_R2[which.max(gwasAD_LD_R2)],
+          SV_is_xQTL = xQTL[which.max(gwasAD_LD_R2)]) %>% 
+  distinct()
+
+gwas_ad_grouped_SVinfo_tmp4 = replROSMAP %>%
+  filter(!locus %in% gwas_ad_grouped_SVinfo_tmp3$locus) %>%
+#  filter(prioritized) %>%
+  filter(is.na(gwasAD_LD_R2)) %>%
+  filter(!is.na(xQTL_pheno)) %>%
+  group_by(locus) %>%
+  reframe(best_SV = ID[which.min(pval)],
+          best_pheno = pheno[which.min(pval)], 
+          best_Pval =  pval[which.min(pval)],
+          best_R2 = gwasAD_LD_R2[which.min(pval)],
+          SV_is_xQTL = xQTL[which.min(pval)]) %>% 
+  distinct()
+
+gwas_ad_grouped_SVinfo_tmp5 = replROSMAP %>%
+  filter(!locus %in% gwas_ad_grouped_SVinfo_tmp3$locus) %>%
+  filter(!locus %in% gwas_ad_grouped_SVinfo_tmp4$locus) %>%
+  filter(prioritized) %>%
+  filter(is.na(gwasAD_LD_R2)) %>%
+  filter(is.na(xQTL_pheno)) %>%
+  group_by(locus) %>%
+  reframe(best_SV = ID[which.min(pval)],
+          best_pheno = pheno[which.min(pval)], 
+          best_Pval =  pval[which.min(pval)],
+          best_R2 = gwasAD_LD_R2[which.min(pval)],
+          SV_is_xQTL = xQTL[which.min(pval)]) %>% 
+  distinct()
+
+gwas_ad_grouped_SVinfo_tmp6 = unique(bind_rows(gwas_ad_grouped_SVinfo_tmp3, gwas_ad_grouped_SVinfo_tmp4, gwas_ad_grouped_SVinfo_tmp5))
+
+gwas_ad_grouped_SVinfo = gwas_ad_grouped %>% 
+  left_join(gwas_ad_grouped_SVinfo_tmp, by = "locus") %>%
+  left_join(gwas_ad_grouped_SVinfo_tmp2, by = "locus") %>%
+  left_join(gwas_ad_grouped_SVinfo_tmp6, by = "locus") %>%
+  arrange(CHR,locus_start) %>% distinct()
+
+gwas_ad_grouped_SVinfo$best_SV_Pval = ifelse(gwas_ad_grouped_SVinfo$best_Pval<=0.005,-log10(gwas_ad_grouped_SVinfo$best_Pval),NA)
+
+gwas_ad_mtx = t(as.matrix(gwas_ad_grouped_SVinfo[,c("logP","n_SV","best_R2",
+                                                    "n_SV_associated_with_Pheno",
+                                                    "best_SV_Pval","SV_is_xQTL")]))
+colnames(gwas_ad_mtx) = gwas_ad_grouped_SVinfo$locus_name
+rownames(gwas_ad_mtx) = c("logP","n_SV","best_R2",
+                          "n_SV_associated_with_Pheno",
+                          "best_SV_Pval","SV_is_xQTL")
+
+gwas_ad_mtx_scaled = t(scale(t(gwas_ad_mtx)))
+
+gwas_ad_mtx_labels = gwas_ad_mtx
+gwas_ad_mtx_labels_1 = round(gwas_ad_mtx_labels,digits = 0)[c("n_SV","n_SV_associated_with_Pheno","SV_is_xQTL"),]
+gwas_ad_mtx_labels_1[is.na(gwas_ad_mtx_labels_1)] = ""
+gwas_ad_mtx_labels_2 = round(gwas_ad_mtx_labels,digits = 1)[c("logP","best_SV_Pval"),]
+gwas_ad_mtx_labels_2[is.na(gwas_ad_mtx_labels_2)] = ""
+gwas_ad_mtx_labels_3 = round(gwas_ad_mtx_labels,digits = 2)[c("best_R2"),,drop=F]
+gwas_ad_mtx_labels_3[is.na(gwas_ad_mtx_labels_3)] = ""
+
+gwas_ad_mtx_labels = rbind(gwas_ad_mtx_labels_1,gwas_ad_mtx_labels_2,gwas_ad_mtx_labels_3)
+gwas_ad_mtx_labels = gwas_ad_mtx_labels[c("logP",
+                                          "n_SV",
+                                          "best_R2",
+                                          "n_SV_associated_with_Pheno",
+                                          "SV_is_xQTL"),]
+gwas_ad_mtx_scaled = gwas_ad_mtx_scaled[rownames(gwas_ad_mtx_labels),]
+
+rownames(gwas_ad_mtx_scaled) = c("AD GWAS -log10(P-value)", 
+                                 "Number of SVs in the locus\n", 
+                                 "SV in LD with GWAS SNP (R2)",
+                                 "SVs associated with ADRD phenotypes\nP-value < 0.005 (ROS/MAP)", 
+                                 "SV-xQTL (number of phenotypes)")
+rownames(gwas_ad_mtx_labels) = rownames(gwas_ad_mtx_scaled)
+
+createDT(gwas_ad_grouped_SVinfo)
+```
+
+```{r, fig.width=6, fig.height=20}
+library(ComplexHeatmap)
+library(RColorBrewer)
+
+ha = list()
+
+for(ii in 1:nrow(gwas_ad_mtx_scaled)){
+  plot_name_ii = rownames(gwas_ad_mtx_scaled)[ii]
+  data_ii = t(gwas_ad_mtx_scaled[plot_name_ii,,drop=F])
+  labels_ii = t(gwas_ad_mtx_labels[plot_name_ii,,drop=F])
+  
+  ha[[plot_name_ii]] = suppressWarnings(
+    Heatmap(data_ii, 
+            name = plot_name_ii, 
+            show_heatmap_legend = F,
+            layer_fun = local({
+              labels_ii = labels_ii
+              function(j, i, x, y, width, height, fill) {
+                grid.text(sprintf("%s", pindex(labels_ii, i, j)), x, y, gp = gpar(fontsize = 9))
+              }
+            }),
+            column_names_side = "top",
+            col = colorRampPalette(brewer.pal(n = 7, name ="Reds")[-c(6,7)])(50),
+            row_names_side = "left", show_row_names = T,
+            cluster_rows = F, cluster_columns = F, column_names_rot = -45,
+            column_names_gp = gpar(fontsize = 10),
+            row_names_gp = gpar(fontsize = 10),
+            show_row_dend = F, 
+            show_column_dend = F, 
+            rect_gp = gpar(col = "white", lwd = 1)))
+}
+ht_list_t = ha[[1]] + ha[[2]] + ha[[3]] + ha[[4]] + ha[[5]]
+
+draw(ht_list_t)
+```
+
+## SVs in LD with GWAS only
+
+```{r}
+# Prioritize by R2 
+GWAS_with_SV_in_LD  = replROSMAP %>% 
+  filter(!is.na(gwasAD_LD_R2)) %>%
+  group_by(locus) %>% 
+  reframe(
+    # SV with the highest R2 
+    all_SV_with_R2 = unique(paste0(ID,":",gwasAD_LD_R2)) %>% paste(collapse = ","),
+    best_R2 = gwasAD_LD_R2[which.max(gwasAD_LD_R2)], # R2 of the SV with the lowest Pvalue
+    best_R2_SV = unique(ID[which.max(gwasAD_LD_R2)])
+    ) %>% distinct() %>% 
+  arrange(-best_R2)
+
+GWAS_with_SV_in_LD_info = replROSMAP %>% 
+  filter(ID %in% GWAS_with_SV_in_LD$best_R2_SV) %>%
+  group_by(ID,sv_info) %>%
+  reframe(
+    best_pheno = pheno[which.min(pval)], # lowest Pvalue
+    best_pheno_Pval = pval[which.min(pval)],
+    xQTL = xQTL[which.min(pval)],
+    ) %>% distinct() %>% 
+  arrange(-best_pheno_Pval) 
+
+GWAS_with_SV_in_LD = GWAS_with_SV_in_LD %>% left_join(GWAS_with_SV_in_LD_info, by = c("best_R2_SV"="ID"))
+createDT(GWAS_with_SV_in_LD)
+```
+
+```{r fig.width=7.5, fig.height=8}
+# Prioritize by R2 
+GWAS_with_SV_in_LD  = replROSMAP %>% 
+  filter(!is.na(gwasAD_LD_R2)) %>%
+  group_by(locus,ID) %>% 
+  reframe(
+    # SV with the highest R2 
+    best_R2 = gwasAD_LD_R2[which.max(gwasAD_LD_R2)], # R2 of the SV with the lowest Pvalue
+    best_R2_SV = unique(ID[which.max(gwasAD_LD_R2)])
+    ) %>% distinct() %>% arrange(-best_R2)
+
+GWAS_with_SV_in_LD_info = replROSMAP %>% filter(ID %in% GWAS_with_SV_in_LD$best_R2_SV) %>%
+  group_by(ID,sv_info) %>%
+  reframe(
+    best_pheno = pheno[which.min(pval)], # lowest Pvalue
+    best_pheno_Pval = pval[which.min(pval)],
+    xQTL = xQTL[which.min(pval)],
+    ) %>% distinct() %>% arrange(-best_pheno_Pval) 
+
+GWAS_with_SV_in_LD = GWAS_with_SV_in_LD %>% left_join(GWAS_with_SV_in_LD_info, by = c("best_R2_SV"="ID"))
+GWAS_with_SV_in_LD = GWAS_with_SV_in_LD[gtools::mixedorder(GWAS_with_SV_in_LD$locus),]
+
+GWAS_with_SV_in_LD = GWAS_with_SV_in_LD %>% left_join(gwas_ad_grouped[,c("locus","GENE")], by = "locus")
+GWAS_with_SV_in_LD$locus = paste0(GWAS_with_SV_in_LD$locus, " (", GWAS_with_SV_in_LD$GENE, ")")
+
+locus_col_pal = pal_npg(palette = "nrc")(length(unique(GWAS_with_SV_in_LD$locus)))
+names(locus_col_pal) = unique(GWAS_with_SV_in_LD$locus)
+  
+row_ha = rowAnnotation(`Locus` = GWAS_with_SV_in_LD$locus,
+                       col = list(`Locus` = locus_col_pal),
+                       show_legend = c(T))
+
+row_split = as.numeric(factor(GWAS_with_SV_in_LD$locus, levels = unique(GWAS_with_SV_in_LD$locus)))
+
+text = as.list(unique(GWAS_with_SV_in_LD$locus))
+
+text = lapply(unique(row_split), function(x) {
+    df = data.frame(text = unique(GWAS_with_SV_in_LD$locus)[x])
+    df$fontsize = 10
+    df$col = "black"
+    df
+})
+
+names(text) = unique(row_split)
+
+svtype = gsub("(.*?) (.*)","\\1",GWAS_with_SV_in_LD$sv_info)
+svlen = scales::comma(abs(as.numeric(gsub("(.*)len:(.*?) (.*)","\\2",GWAS_with_SV_in_LD$sv_info))))
+svmaf = scales::percent(abs(as.numeric(gsub("(.*)maf:(.*?))","\\2",GWAS_with_SV_in_LD$sv_info))),accuracy = 0.1)
+svinfo2 = paste0(svlen, " bp ", svtype, "; MAF: ", svmaf)
+GWAS_with_SV_in_LD$svtype = svtype
+GWAS_with_SV_in_LD$svlen = abs(as.numeric(gsub("(.*)len:(.*?) (.*)","\\2",GWAS_with_SV_in_LD$sv_info)))
+GWAS_with_SV_in_LD$svmaf = abs(as.numeric(gsub("(.*)maf:(.*?))","\\2",GWAS_with_SV_in_LD$sv_info)))
+
+GWAS_with_SV_in_LD_mtx = GWAS_with_SV_in_LD[,c("best_R2"), drop=F] %>% as.matrix()
+rownames(GWAS_with_SV_in_LD_mtx) = svinfo2
+
+h1 = Heatmap(GWAS_with_SV_in_LD_mtx, 
+        name = "R^2", 
+        column_title = "R2",
+      cell_fun = function(j, i, x, y, width, height, fill) {
+        if(GWAS_with_SV_in_LD_mtx[i, j] > 0.8) {
+          grid.text(round(GWAS_with_SV_in_LD_mtx[i, j],digits = 2), x, y, gp = gpar(fontsize = 10, col = "white"))
+        }else{
+          grid.text(round(GWAS_with_SV_in_LD_mtx[i, j],digits = 2), x, y, gp = gpar(fontsize = 10))
+        }
+      },
+      col = colorRampPalette((brewer.pal(n = 7, name ="Reds")))(100),
+      row_names_side = "right", show_row_names = T, show_column_names = F,
+      cluster_rows = F, cluster_columns = F,
+      column_names_gp = gpar(fontsize = 9),
+      row_names_gp = gpar(fontsize = 9),
+      row_split = row_split,
+      row_title = "AD GWAS Locus",
+      left_annotation = rowAnnotation(textbox = anno_textbox(row_split, 
+                                                             text,
+                                                             side = "left", 
+                                                             by = "anno_block",
+                                                             background_gp = gpar(fill = "white", col = "#AAAAAA"),
+                                                             just = "right")),
+      show_row_dend = F, 
+      show_column_dend = F, 
+      rect_gp = gpar(col = "white", lwd = 1))
+
+GWAS_with_SV_in_LD$best_pheno_Pval_log = -log10(GWAS_with_SV_in_LD$best_pheno_Pval)
+GWAS_with_SV_in_LD_mtx = GWAS_with_SV_in_LD[,c("best_pheno_Pval_log"), drop=F] %>% as.matrix()
+rownames(GWAS_with_SV_in_LD_mtx) = svinfo2
+
+h2 = Heatmap(GWAS_with_SV_in_LD_mtx, 
+        name = "P-value", 
+        column_title = "P-value",
+      cell_fun = function(j, i, x, y, width, height, fill) {
+        if(GWAS_with_SV_in_LD_mtx[i, j] > -log10(0.001)) {
+          grid.text("***", x, y, gp = gpar(fontsize = 12, col = "white"), vjust = 0.77)
+        } else if(GWAS_with_SV_in_LD_mtx[i, j] > -log10(0.01)) {
+          grid.text("**", x, y, gp = gpar(fontsize = 12), vjust = 0.77)
+        } else if(GWAS_with_SV_in_LD_mtx[i, j] > -log10(0.05)) {
+          grid.text("*", x, y, gp = gpar(fontsize = 12), vjust = 0.77)
+        }
+      },
+      col = colorRampPalette((brewer.pal(n = 7, name ="Blues")))(100),
+      row_names_side = "right", show_row_names = T, show_column_names = F,
+      cluster_rows = F, cluster_columns = F,
+      column_names_gp = gpar(fontsize = 9),
+      row_names_gp = gpar(fontsize = 9),
+      row_split = row_split,
+      row_title = "AD GWAS Locus",
+      show_row_dend = F, 
+      show_column_dend = F, 
+      rect_gp = gpar(col = "white", lwd = 1))
+
+h1 + h2
+```
+
+```{r}
+save(GWAS_with_SV_in_LD, file = paste0(data.dir,"AD_GWAS_with_SV_in_LD.RData"))
+
+createDT(GWAS_with_SV_in_LD)
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```

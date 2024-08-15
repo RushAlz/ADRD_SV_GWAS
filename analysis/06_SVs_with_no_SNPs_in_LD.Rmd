@@ -1,0 +1,303 @@
+---
+title: "SV GWAS with AD/ADRD traits"
+subtitle: "SVs with no LD with SNPs"
+author:  |
+ | Ricardo A. Vialle
+ | Katia de Paiva Lopes
+ |
+ | Rush Alzheimer’s Disease Center
+ | Chicago, IL 60612
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: spacelab
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(vcfR)
+library(data.table)
+library(ggrepel)
+library(ggsci)
+library(Biobase)
+library(genefilter)
+library(scales)
+library(gt)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{css zoom-lib-src, echo = FALSE, eval=F}
+script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"
+```
+
+```{js zoom-jquery, echo = FALSE}
+ $(document).ready(function() {
+    $('body').prepend('<div class=\"zoomDiv\"><img src=\"\" class=\"zoomImg\"></div>');
+    // onClick function for all plots (img's)
+    $('img:not(.zoomImg)').click(function() {
+      $('.zoomImg').attr('src', $(this).attr('src')).css({width: '100%'});
+      $('.zoomDiv').css({opacity: '1', width: 'auto', border: '1px solid white', borderRadius: '5px', position: 'fixed', top: '50%', left: '50%', marginRight: '-50%', transform: 'translate(-50%, -50%)', boxShadow: '0px 0px 50px #888888', zIndex: '50', overflow: 'auto', maxHeight: '100%'});
+    });
+    // onClick function for zoomImg
+    $('img.zoomImg').click(function() {
+      $('.zoomDiv').css({opacity: '0', width: '0%'}); 
+    });
+  });
+```
+
+```{r setup, include=FALSE}
+root.dir = "~/projects/ADRD_SV_GWAS/"
+runID = "run_20230209"
+
+data.dir = paste0(root.dir,runID,"/")
+figures.dir = paste0(data.dir,"/figures/")
+
+load(paste0(data.dir,"ROSMAP_SV_4_association.RData"))
+load(paste0(data.dir,"SV_pheno_list.RData"))
+```
+
+```{r Helper Functions, echo=FALSE}
+source(paste0(data.dir,"/lib/plot_functions.R"))
+source(paste0(data.dir,"/lib/support_functions.R"))
+```
+
+## Load data
+
+```{r load_data, echo=FALSE}
+res_ROS = fread(file = paste0(data.dir,"/","ROS_SVs","/association_results.tsv.gz"))
+res_ROS %>% filter(pheno %in% rownames(pheno_data)) -> res_ROS
+res_MAP = fread(file = paste0(data.dir,"/","MAP_SVs","/association_results.tsv.gz"))
+res_MAP %>% filter(pheno %in% rownames(pheno_data)) -> res_MAP
+res_META = fread(file = paste0(data.dir,"/Meta_analysis_results.tsv.gz")) %>% 
+  filter(pheno %in% rownames(pheno_data))
+res_ROSMAP = res_META %>% select(ID, sv_info, pheno, BETA_RE, STD_RE, PVALUE_RE2)
+colnames(res_ROSMAP) = c("ID","sv_info","pheno","Estimate","Std. Error","pval")
+
+ld_all = read.table(paste0("/pastel/resources/SVs/ld_sv_snv.tsv.gz"), header = T)
+# Remove rows with self LD
+ld_all2 = ld_all[!grepl("ALU|DEL|DUP|INS|LIN|SVA", ld_all$snv_id),]
+
+gnomad_overlap = fread("/pastel/resources/SVs/rosmap_gnomad.rec_overlap_80")
+gnomad_overlap$V5[grepl("ALU|SVA|LINE1", gnomad_overlap$V5)] = "INS" 
+gnomad_overlap = gnomad_overlap[gnomad_overlap$V5 == gnomad_overlap$V11 | grepl("MCNV|CPX|BND",gnomad_overlap$V11), ]
+```
+
+## Prioritization
+
+`PVALUE_RE2 <= 5e-3` and `MAF >= 0.05 & MAF <= 0.45` and `overlap with gnomAD-SV` and `no LD with SNPs`
+
+```{r message=T}
+svs_bestLD = ld_all2 %>% 
+  group_by(sv_id) %>% 
+  slice_max(n = 1, order_by = r2, na_rm = T, with_ties = F) %>% 
+  mutate(LD = paste0(snv_id," (",r2,")"))
+
+metasoft_output_noLD = res_META %>% 
+  filter(!ID %in% svs_bestLD$sv_id) %>%
+  mutate(MAF = as.numeric(gsub("(.*) maf:(.*))","\\2",sv_info))) %>%
+  filter(MAF >= 0.05 & MAF <= 0.45) %>%
+  filter(ID %in% unique(gnomad_overlap$V4)) %>%
+  distinct() %>%
+  arrange(PVALUE_RE2)
+
+# dim(metasoft_output_noLD) # 3168   33
+# length(unique(metasoft_output_noLD$ID)) # 132
+
+ROSMAP_meta_hits = metasoft_output_noLD %>% 
+  arrange(PVALUE_RE2) %>%
+  dplyr::select(pheno, ID, PVALUE_RE2) %>% 
+  filter(PVALUE_RE2 <= 5e-3)
+
+ROSMAP_meta_hits$ID_pheno = paste0(ROSMAP_meta_hits$ID,"_",ROSMAP_meta_hits$pheno)
+
+ROSMAP_meta_hits = ROSMAP_meta_hits %>% left_join(svs_bestLD[,c("sv_id","r2","LD")], by = c("ID" = "sv_id"))
+
+message("Number of meta-analysis hits: ", nrow(ROSMAP_meta_hits))
+message("Number of unique meta-analysis hits: ", length(unique(ROSMAP_meta_hits$ID)))
+message("Number of unique meta-analysis hits with LD: ", length(unique(ROSMAP_meta_hits$ID[!is.na(ROSMAP_meta_hits$LD)])))
+```
+
+```{r}
+res_ROSMAP = res_ROSMAP %>% 
+  mutate(ID_pheno = paste0(ID,"_",pheno)) 
+
+DiscROS = res_ROS %>% 
+  mutate(ID_pheno = paste0(ID,"_",pheno)) %>%
+  filter(ID_pheno %in% ROSMAP_meta_hits$ID_pheno)
+DiscMAP = res_MAP %>%
+  mutate(ID_pheno = paste0(ID,"_",pheno)) %>%
+  filter(ID_pheno %in% ROSMAP_meta_hits$ID_pheno)
+
+replROSMAP = DiscROS[,c("ID_pheno","ID","pheno","sv_info","closest_gene","Estimate","Std. Error","pval")] %>% 
+  inner_join(DiscMAP[,c("ID_pheno","ID","pheno","Estimate","Std. Error","pval")], 
+             by = c("ID_pheno","ID","pheno"), suffix = c(".ROS",".MAP")) %>%
+  left_join(res_ROSMAP[,c("ID_pheno","ID","pheno","Estimate","Std. Error","pval")], by = c("ID_pheno","ID","pheno")) %>%
+  left_join(ROSMAP_meta_hits[,c("ID_pheno","PVALUE_RE2","LD"),drop=F], by = c("ID_pheno")) %>% distinct()
+
+res_ROSMAP$pheno_label = pheno_data[res_ROSMAP$pheno,"description"]
+res_ROSMAP$pheno_variant = paste0(res_ROSMAP$pheno,":",res_ROSMAP$ID)
+
+Results_table = data.frame(Phenotype = replROSMAP$pheno)
+Results_table$ID = replROSMAP$ID
+Results_table$SV = gsub(" maf.*)","bp)",replROSMAP$sv_info)
+Results_table$MAF = percent(as.numeric(gsub("(.*) maf:(.*))","\\2",replROSMAP$sv_info)), accuracy = 0.1)
+Results_table$BetaSE_ROS = sprintf("%.2f (%.2f)",replROSMAP$Estimate.ROS, replROSMAP$`Std. Error.ROS`)
+Results_table$P_ROS = replROSMAP$pval.ROS
+Results_table$BetaSE_MAP = sprintf("%.2f (%.2f)",replROSMAP$Estimate.MAP, replROSMAP$`Std. Error.MAP`)
+Results_table$P_MAP = replROSMAP$pval.MAP
+Results_table$BetaSE_ROSMAP = sprintf("%.2f (%.2f)",replROSMAP$Estimate, replROSMAP$`Std. Error`)
+Results_table$P_ROSMAP = replROSMAP$PVALUE_RE2
+Results_table$P_Meta = replROSMAP$PVALUE_RE2
+
+Results_table$Gene = replROSMAP$closest_gene
+Results_table$LD = replROSMAP$LD
+
+Results_table$pheno_variant = paste0(Results_table$Phenotype,":",Results_table$ID)
+res_ROSMAP$is2highlight = ifelse(res_ROSMAP$pheno_variant %in% Results_table$pheno_variant,"yes","no")
+
+# fwrite(Results_table, file = paste0(data.dir,"meta_analysis_results",runSufix,".tsv.gz"), sep = "\t")
+
+Results_table %>% arrange(P_ROSMAP) %>% 
+  gt::gt() %>% fmt_scientific(columns = c("P_ROS","P_MAP","P_ROSMAP")) %>%
+  tab_spanner( label = "ROS", columns = c(BetaSE_ROS, P_ROS)) %>%
+  tab_spanner( label = "MAP", columns = c(BetaSE_MAP, P_MAP)) %>%
+  tab_spanner( label = "Meta (ROS/MAP)", columns = c(BetaSE_ROSMAP, P_ROSMAP)) %>%
+  tab_style(style = list(cell_text(style = "italic")), 
+            locations = cells_body(columns = Gene)) %>%
+  tab_header(
+    title = "",
+    subtitle = "Top results of genome-wide scan for SVs"
+  )
+```
+
+
+```{r, fig.width=14, fig.height=6, eval=T}
+p = plot_multitrait_chicago(res_final = res_ROSMAP, 
+                               suggestive_threshold = 4, 
+                               ylims = c(-8.5, 8.5), 
+                               topN = nrow(res_ROSMAP), 
+                               pheno_label = "pheno_label", 
+                               is2highlight = "is2highlight")
+p
+```
+
+```{r fig.width=10, fig.height=3.8}
+selected_res = res_ROSMAP %>% 
+  filter(ID %in% replROSMAP$ID) %>% 
+  mutate(pheno_variant = paste0(pheno,":",ID)) %>% 
+  arrange(pval) %>% distinct() 
+
+selected_res_pval_mtx = selected_res %>% 
+  dplyr::select(c(sv_info, pval, pheno_label)) %>%
+  pivot_wider(id_cols = sv_info, names_from = pheno_label, values_from = pval) %>% 
+  column_to_rownames("sv_info")
+rownames(selected_res_pval_mtx) = gsub("(.*) maf:(.*))","\\1bp)",rownames(selected_res_pval_mtx))
+selected_res_pval_mtx = selected_res_pval_mtx[gtools::mixedorder(gsub("(.*) (.*) (.*)","\\2",rownames(selected_res_pval_mtx))),]
+
+log_matrix_pvalue_to_plot = -log10(selected_res_pval_mtx)
+dimnames(log_matrix_pvalue_to_plot) = dimnames(log_matrix_pvalue_to_plot)
+
+selected_res_pval_bonf_df = selected_res_pval_mtx %>% 
+  apply(2, function(x) p.adjust(x, method = "bonferroni")) %>% 
+  as.data.frame() 
+
+selected_res_pval_bonf_df = selected_res_pval_mtx %>% 
+  mutate(across(dplyr::everything(), ~ p.adjust(.x, method = "bonferroni", n = length(.x)))) %>% 
+  as.data.frame() 
+
+cut_not_signif = rowSums(selected_res_pval_bonf_df<0.05, na.rm = T)==0
+selected_res_pval_bonf_df = selected_res_pval_bonf_df[!cut_not_signif,]
+log_matrix_pvalue_to_plot = log_matrix_pvalue_to_plot[!cut_not_signif,]
+selected_res_pval_mtx = selected_res_pval_mtx[!cut_not_signif,]
+
+matrix_pvalue_to_plot = selected_res_pval_bonf_df
+matrix_pvalue_to_plot.signif <- symnum(as.matrix(matrix_pvalue_to_plot), corr = FALSE, na = FALSE, 
+                                           cutpoints = c(0, 0.05, 1), 
+                                           symbols = c(quote("\u2731")," "))
+library(ComplexHeatmap)
+library(circlize)
+library(RColorBrewer)
+
+column_annotation = data.frame(pheno_label = colnames(matrix_pvalue_to_plot))
+column_annotation %>% left_join(unique(res_ROSMAP[,c("pheno_label","pheno")])) %>%
+  left_join(pheno_data %>% rownames_to_column("pheno")) %>%
+  dplyr::select(category, pheno_label) %>%
+  column_to_rownames("pheno_label") -> column_annotation
+col_pal = RColorBrewer::brewer.pal(n = length(unique(column_annotation$category)), name ="Dark2")
+names(col_pal) = sort(unique(column_annotation$category))
+
+column_order = order(column_annotation$category)
+column_annotation = column_annotation[column_order,,drop=F]
+col_ha = columnAnnotation(`Category` = column_annotation$category,
+                       col = list(`Category` = col_pal),
+                       show_legend = c(F), 
+                       height = unit(0.3,"mm"), 
+                       annotation_height = unit(0.3, "mm"), 
+                       simple_anno_size = unit(2, "mm"),
+                       annotation_label = "")
+
+##### Show Overlaps
+selected_res = add_SV_annot(as.data.frame(selected_res))
+
+row_annotation = data.frame(sv_info = rownames(matrix_pvalue_to_plot))
+rownames(row_annotation) = row_annotation$sv_info
+row_annotation = row_annotation %>% 
+  left_join(selected_res %>% 
+              mutate(sv_info = gsub("(.*) maf:(.*))","\\1bp)",sv_info)) %>%
+              dplyr::select(sv_info, overlapGene, overlapIntronic, overlapIntergenic) %>%
+              distinct() %>% pivot_longer(-sv_info, names_to = "Annotation") %>% filter(value == T), 
+            by = "sv_info")
+row_annotation$Annotation = gsub("overlap","",row_annotation$Annotation)
+row_annotation$Annotation = gsub("Gene","Genic",row_annotation$Annotation)
+
+row_pal = wesanderson::wes_palette("Darjeeling1")[1:3]
+row_pal = viridis_pal(option = "F")(3)
+names(row_pal) = c("Genic", "Intronic", "Intergenic")
+
+row_ha = rowAnnotation(
+  ` ` = row_annotation$Annotation,
+  col = list(` ` = row_pal),
+  show_legend = T,
+  width = unit(0.3,"mm"), 
+  annotation_width = unit(0.3, "mm"), 
+  simple_anno_size = unit(2, "mm"))
+
+log_matrix_pvalue_to_plot = log_matrix_pvalue_to_plot[,column_order]
+matrix_pvalue_to_plot.signif = matrix_pvalue_to_plot.signif[,column_order]
+
+Heatmap(as.matrix(log_matrix_pvalue_to_plot), 
+        name = "-log10(P-value)",
+        cell_fun = function(j, i, x, y, width, height, fill) {
+            grid.text( matrix_pvalue_to_plot.signif[i,j], x, y, gp = gpar(fontsize = 12))
+        },
+        col = colorRampPalette((brewer.pal(n = 7, name ="Reds")))(100),
+        row_names_side = "left", show_row_names = T,
+        cluster_rows = F, cluster_columns = F,
+        column_names_rot = 90,
+        column_names_gp = gpar(fontsize = 9),
+        row_names_gp = gpar(fontsize = 9),
+        bottom_annotation = col_ha,
+        left_annotation = row_ha,
+        show_row_dend = F, show_column_dend = F, 
+        rect_gp = gpar(col = "white", lwd = 1))
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```

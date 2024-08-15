@@ -1,0 +1,152 @@
+---
+title: "SV GWAS with AD/ADRD traits"
+subtitle: "Associations (ROS)"
+author:  |
+ | Ricardo A. Vialle
+ |
+ | Rush Alzheimer’s Disease Center
+ | Chicago, IL 60612
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: spacelab
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(vcfR)
+library(data.table)
+library(ggrepel)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{css zoom-lib-src, echo = FALSE, eval=F}
+script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"
+```
+
+```{js zoom-jquery, echo = FALSE}
+ $(document).ready(function() {
+    $('body').prepend('<div class=\"zoomDiv\"><img src=\"\" class=\"zoomImg\"></div>');
+    // onClick function for all plots (img's)
+    $('img:not(.zoomImg)').click(function() {
+      $('.zoomImg').attr('src', $(this).attr('src')).css({width: '100%'});
+      $('.zoomDiv').css({opacity: '1', width: 'auto', border: '1px solid white', borderRadius: '5px', position: 'fixed', top: '50%', left: '50%', marginRight: '-50%', transform: 'translate(-50%, -50%)', boxShadow: '0px 0px 50px #888888', zIndex: '50', overflow: 'auto', maxHeight: '100%'});
+    });
+    // onClick function for zoomImg
+    $('img.zoomImg').click(function() {
+      $('.zoomDiv').css({opacity: '0', width: '0%'}); 
+    });
+  });
+```
+
+```{r setup, include=FALSE}
+root.dir = "~/projects/ADRD_SV_GWAS/"
+runID = "run_20230209"
+
+data.dir = paste0(root.dir,runID,"/")
+pheno_df = load(paste0(data.dir,"SV_pheno_list.RData"))
+
+studyDataID = "ROS_SVs"
+studyID="ROS"
+```
+
+```{r Helper Functions, echo=FALSE}
+source(paste0(data.dir,"/lib/plot_functions.R"))
+source(paste0(data.dir,"/lib/support_functions.R"))
+```
+
+## Load data
+
+```{r eval=F}
+extractorRData <- function(file, object) {
+      #' Function for extracting an object from a .RData file created by R's save() command
+      #' Inputs: RData file, object name
+      E <- new.env()
+      load(file=file, envir=E)
+      return(get(object, envir=E, inherits=F))
+}
+
+# Load genotypes and phenotypes
+load(paste0(data.dir,"ROSMAP_SV_4_association.RData"))
+
+pheno_list_files = list.files(paste0(data.dir,"/",studyDataID,"/association_results"), pattern = "*.assoc.RData", full.names = T)
+pheno_list = pheno_list_files[gsub("(.*)/(.*)\\.assoc\\.RData","\\2",pheno_list_files) %in% names(pheno_list)]
+
+res.all = data.frame()
+for (pheno_i in pheno_list){
+  #pheno_i = pheno_list[1]
+  print(pheno_i)
+  res = extractorRData(pheno_i, "assoc")
+  res_i = res[,c("rs.id","beta","SE", "pval")]
+  res_i$bonf = p.adjust(res_i$pval, method = "bonferroni")
+  res_i$fdr = p.adjust(res_i$pval, method = "fdr")
+  colnames(res_i) = c("sv_id","Estimate","Std. Error", "nom_p", "bonf" , "fdr")
+  res_i$pheno = gsub("(.*)\\/(.*)\\.assoc\\.RData","\\2",pheno_i)
+  res.all <- bind_rows(res.all,res_i)
+}
+
+vcf.meta$sv_info = paste0(vcf.meta$SVTYPE, " chr", vcf.meta$CHROM, ":", vcf.meta$POS, " (len:", vcf.meta$SVLEN, " maf:", vcf.meta$MAF,")")
+
+res_final = vcf.meta[,c("ID","sv_info","closest_gene")] %>% right_join(res.all, by = c("ID"="sv_id")) %>% dplyr::rename("pval" = "nom_p") %>% arrange(fdr)
+
+save(res_final, file = paste0(data.dir,"/",studyDataID,"/association_results.RData"))
+```
+
+## Association Results
+
+```{r}
+# Load genotypes and phenotypes
+load(paste0(data.dir,"ROSMAP_SV_4_association.RData"))
+load(paste0(data.dir,"/",studyDataID,"/association_results.RData"))
+phenotypes = phenotypes %>% 
+  filter(study==studyID) 
+
+res_final = res_final %>% arrange(pval) %>% 
+           filter(ID %in% valid_MAF_SVs) %>%
+           filter(ID %in% valid_HWE_SVs) %>%
+  filter(pheno %in% names(pheno_list))
+
+res_final = add_LD_info(res_final)
+
+data.table::fwrite(res_final, file = paste0(data.dir,"/",studyDataID,"/association_results.tsv.gz"))
+createDT(res_final %>% head(1000))
+```
+
+```{r}
+ci = 0.95
+df_m = res_final %>% 
+  group_by(pheno) %>%
+  mutate(observed = -log10(sort(pval)),
+         expected = -log10(ppoints(n())),
+         clower   = -log10(qbeta(p = (1 - ci) / 2, shape1 = 1:n(), shape2 = n():1)),
+         cupper   = -log10(qbeta(p = (1 + ci) / 2, shape1 = 1:n(), shape2 = n():1)),
+         lambda   = median(qchisq(1 - pval, 1)) / qchisq(0.5, 1)) %>%
+  reframe(lambda = unique(lambda), lambda_label = sprintf("%s (λ = %.2f)", pheno, lambda)) %>% distinct()
+
+data.table::fwrite(df_m, file = paste0(data.dir,"/",studyDataID,"/lambdas.tsv.gz"))
+createDT(df_m)
+```
+
+```{r, fig.width=10, fig.height=6}
+plot_multitrait_manhattan(res_final, pheno_label = "description")
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```

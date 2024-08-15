@@ -1,0 +1,209 @@
+---
+title: "SV GWAS with AD/ADRD traits"
+subtitle: "SAIGEgds Associations"
+author:  |
+ | Ricardo A. Vialle
+ |
+ | Rush Alzheimer’s Disease Center
+ | Chicago, IL 60612
+date: "`r Sys.Date()`"
+params:
+  geno_gds: "~/projects/sv_and_resilience/qced_data/ROS_SVs.gds"
+  pruned_gds: "~/projects/sv_and_resilience/qced_data/ROS_SVs.pruned.gds"
+  pheno_df: "~/projects/sv_and_resilience/20230209/ROSMAP_SV_4_association.RData"
+  outdir: "~/projects/sv_and_resilience/20230209/ROS_SVs/"
+  outcome: "gpath"
+  family: "quantitative"
+  covariates: ["age_death","msex","educ","AncPC1","AncPC2","AncPC3","AncPC4","AncPC5"]
+  runID: "run_20230209"
+  data.dir: "~/projects/sv_and_resilience/"
+output: 
+ rmarkdown::html_document:
+   theme: spacelab
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+```{r load.packages, echo=FALSE, message=FALSE, rests='hide', warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(vcfR)
+library(ggrepel)
+library(ggsci)
+library(ggthemes)
+library(SeqArray)
+library(SAIGEgds)
+library(SNPRelate)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE)
+```
+
+```{css zoom-lib-src, echo = FALSE, eval=F}
+script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"
+```
+
+```{js zoom-jquery, echo = FALSE}
+ $(document).ready(function() {
+    $('body').prepend('<div class=\"zoomDiv\"><img src=\"\" class=\"zoomImg\"></div>');
+    // onClick function for all plots (img's)
+    $('img:not(.zoomImg)').click(function() {
+      $('.zoomImg').attr('src', $(this).attr('src')).css({width: '100%'});
+      $('.zoomDiv').css({opacity: '1', width: 'auto', border: '1px solid white', borderRadius: '5px', position: 'fixed', top: '50%', left: '50%', marginRight: '-50%', transform: 'translate(-50%, -50%)', boxShadow: '0px 0px 50px #888888', zIndex: '50', overflow: 'auto', maxHeight: '100%'});
+    });
+    // onClick function for zoomImg
+    $('img.zoomImg').click(function() {
+      $('.zoomDiv').css({opacity: '0', width: '0%'}); 
+    });
+  });
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r}
+geno_gds = params$geno_gds
+pruned_gds = params$pruned_gds
+pheno_df = params$pheno_df
+outdir = params$outdir
+outcome = params$outcome
+family = params$family
+runID = params$runID
+data.dir = params$data.dir
+covariates = params$covariates
+
+print("### PARAMS")
+print(paste0("geno_gds: ", geno_gds))
+print(paste0("pruned_gds: ", pruned_gds))
+print(paste0("pheno_df: ", pheno_df))
+print(paste0("outdir: ", outdir))
+print(paste0("outcome: ", outcome))
+print(paste0("family: ", family))
+print(paste0("covariates: ", paste(covariates,collapse = " + ")))
+print(paste0("runID: ", runID))
+print(paste0("data.dir: ", data.dir))
+
+# Output dir:
+system(paste0("mkdir -p ", outdir))
+system(paste0("mkdir -p ", outdir,"association_results"))
+```
+
+## Load data
+
+```{r}
+data.dir = paste0(params$data.dir,"/",runID,"/")
+
+# Load genotypes and phenotypes
+load(paste0(data.dir,"ROSMAP_SV_4_association.RData"))
+phenotypes$sample.id = phenotypes$projid
+```
+
+## Associations
+
+```{r}
+print(outcome)
+```
+
+```{r}
+head(phenotypes[,c(outcome,covariates)])
+```
+
+Inspecting distribution
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=4, fig.height=2.5}
+if(family == "binary"){
+  # Make sure values are numeric (0 and 1)
+  phenotypes[,outcome] = as.integer(as.character(phenotypes[,outcome]))
+}
+
+pheno2plot = setNames(phenotypes[,c("projid",outcome)],c("proid","outcome"))
+ggplot(pheno2plot, aes(x = as.numeric(outcome))) +
+  geom_histogram(bins = 50) +
+  theme_classic()
+```
+
+# Make GRM and prune variants
+
+```{r}
+geno_fn <- geno_gds # All variants
+grm_fn <- pruned_gds # Pruned variants
+```
+
+```{r eval=T}
+if (!file.exists(grm_fn)){
+  gds <- seqOpen(geno_fn)
+  set.seed(1000)
+  snpset <- snpgdsLDpruning(gds)
+  snpset.id <- unlist(snpset, use.names=FALSE)  # get the variant IDs of a LD-pruned set
+  # Create a genotype file for genetic relationship matrix (GRM) using the LD-pruned SNP set:
+  seqSetFilter(gds, variant.id=snpset.id)
+  # export to a GDS genotype file without annotation data
+  seqExport(gds, grm_fn, info.var=character(), fmt.var=character(), samp.var=character())
+  seqClose(gds)
+}
+
+# Fitting the null model
+set.seed(1000)
+
+# null model fitting using GRM from grm_fn
+an.error.occured <- FALSE
+glmm <- tryCatch( { 
+  result <- seqFitNullGLMM_SPA(as.formula(paste(outcome, "~", paste(covariates, collapse = " + "))), phenotypes, 
+                         grm_fn, maf = 0.01,
+                         trait.type=family, 
+                         sample.col="sample.id", 
+                         inv.norm=T, maxiter = 50, num.thread = 16, max.num.snp = -1, tol = 1e-10)
+  }, error = function(e) {
+    an.error.occured <<- TRUE
+  })
+print(an.error.occured)
+
+if(an.error.occured){
+  quit(save = "no", status = 1)
+}
+
+save(glmm, file = paste0(outdir,"/association_results/",outcome,".null_model.RData"))
+
+AproxHeritability = glmmHeritability(glmm)
+print(paste("Aprox. Heritability:",AproxHeritability))
+save(AproxHeritability, file = paste0(outdir,"/association_results/",outcome,".heritabilty.RData"))
+
+gds_results = paste0(outdir,"/association_results/",outcome,".assoc.gds")
+# calculate, using 2 processes
+assoc <- seqAssocGLMM_SPA(geno_fn, glmm, mac=10, parallel=16)
+
+save(assoc, file = paste0(outdir,"/association_results/",outcome,".assoc.RData"))
+
+res_final = assoc %>% arrange(pval)
+createDT(res_final %>% head(n = 100))
+```
+
+Saving... 
+
+```{r eval=T}
+data.table::fwrite(res_final, file = paste0(outdir,"/association_results/",outcome,".assoc.tsv.gz"), sep = "\t", quote = F, row.names = F)
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```

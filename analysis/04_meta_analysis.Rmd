@@ -1,0 +1,178 @@
+---
+title: "SV GWAS with AD/ADRD traits"
+subtitle: "Meta analysis"
+author:  |
+ | Ricardo A. Vialle
+ |
+ | Rush Alzheimer’s Disease Center
+ | Chicago, IL 60612
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: spacelab
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(vcfR)
+library(data.table)
+library(ggrepel)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{css zoom-lib-src, echo = FALSE, eval=F}
+script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"
+```
+
+```{js zoom-jquery, echo = FALSE}
+ $(document).ready(function() {
+    $('body').prepend('<div class=\"zoomDiv\"><img src=\"\" class=\"zoomImg\"></div>');
+    // onClick function for all plots (img's)
+    $('img:not(.zoomImg)').click(function() {
+      $('.zoomImg').attr('src', $(this).attr('src')).css({width: '100%'});
+      $('.zoomDiv').css({opacity: '1', width: 'auto', border: '1px solid white', borderRadius: '5px', position: 'fixed', top: '50%', left: '50%', marginRight: '-50%', transform: 'translate(-50%, -50%)', boxShadow: '0px 0px 50px #888888', zIndex: '50', overflow: 'auto', maxHeight: '100%'});
+    });
+    // onClick function for zoomImg
+    $('img.zoomImg').click(function() {
+      $('.zoomDiv').css({opacity: '0', width: '0%'}); 
+    });
+  });
+```
+
+```{r setup, include=FALSE}
+root.dir = "~/projects/ADRD_SV_GWAS/"
+runID = "run_20230209"
+
+data.dir = paste0(root.dir,runID,"/")
+load(paste0(data.dir,"ROSMAP_SV_4_association.RData"))
+load(paste0(data.dir,"SV_pheno_list.RData"))
+```
+
+```{r Helper Functions, echo=FALSE}
+source(paste0(data.dir,"/lib/plot_functions.R"))
+source(paste0(data.dir,"/lib/support_functions.R"))
+```
+
+## Load data
+
+```{r load_data, echo=FALSE}
+res_ROS = fread(file = paste0(data.dir,"/","ROS_SVs","/association_results.tsv.gz"))
+res_ROS %>% filter(pheno %in% rownames(pheno_data)) -> res_ROS
+#length(unique(res_ROS$sv_info)) # 20022 SVs
+#length(unique(res_ROS$pheno)) # 24 phenotypes
+res_MAP = fread(file = paste0(data.dir,"/","MAP_SVs","/association_results.tsv.gz"))
+res_MAP %>% filter(pheno %in% rownames(pheno_data)) -> res_MAP
+#length(unique(res_MAP$sv_info)) # 20078 SVs
+#length(unique(res_MAP$pheno)) # 24 phenotypes
+```
+
+```{r eval=F}
+metasoft_jar = "~/tools/Metasoft/Metasoft.jar"
+metasoft_HanEskinPvalueTable = "~/tools/Metasoft/HanEskinPvalueTable.txt"
+
+metasoft_output_all = data.frame()
+for(pheno_i in rownames(pheno_data)){
+  res_ROS_study_i = res_ROS[res_ROS$pheno == pheno_i,]
+  res_ROS_study_i$chr = gsub("(.*?) (.*?):(.*)","\\2",res_ROS_study_i$sv_info)
+  res_ROS_study_i = res_ROS_study_i[!res_ROS_study_i$chr %in% c("chrY","chrX"), ]
+  
+  res_MAP_study_i = res_MAP[res_MAP$pheno == pheno_i,]
+  SVs_in_both = intersect(res_ROS_study_i$ID, res_MAP_study_i$ID)
+  res_ROS_study_i_match = res_ROS_study_i[match(SVs_in_both,res_ROS_study_i$ID),]
+  res_MAP_study_i_match = res_MAP_study_i[match(SVs_in_both,res_MAP_study_i$ID),]
+  
+  # Input File format:
+  # Rows are SNPs.
+  # 1st column is RSID.
+  # 2nd and 3rd columns are effect size (beta) and its standard error of study 1.
+  # 4th and 5th columns are effect size (beta) and its standard error of study 2.
+  # Please write “NA” for missing beta and its standard error.
+  
+  metasoft_input = res_ROS_study_i_match[,c("ID","Estimate","Std. Error")] %>%
+    full_join(res_MAP_study_i_match[,c("ID","Estimate","Std. Error")], by = "ID")
+  
+  metasoft_input_file = paste0(data.dir,"/metasoft_input_",pheno_i,".tsv")
+  
+  fwrite(metasoft_input, 
+         file = metasoft_input_file, sep = "\t",
+         quote = F, col.names = F, row.names = F)
+  
+  metasoft_output_file = paste0(data.dir,"/metasoft_output_",pheno_i,".tsv")
+  metasoft_log_file = paste0(data.dir,"/metasoft_log_",pheno_i,".log")
+  metasoft_cmd = paste("java -jar", metasoft_jar, 
+                       "-input", metasoft_input_file,
+                       "-output", metasoft_output_file,
+                       "-log", metasoft_log_file,
+                       "-pvalue_table", metasoft_HanEskinPvalueTable)
+  system(metasoft_cmd)
+  metasoft_output = fread(metasoft_output_file)
+  metasoft_output$pheno = pheno_i
+  metasoft_output_all = bind_rows(metasoft_output_all, metasoft_output)
+}
+save(metasoft_output_all, file = paste0(data.dir,"/metasoft_output_all.RData"))
+```
+
+## Meta-analysis Results
+
+```{r}
+load(paste0(data.dir,"/metasoft_output_all.RData"))
+
+vcf.meta$sv_info = paste0(vcf.meta$SVTYPE, " chr", vcf.meta$CHROM, ":", vcf.meta$POS, " (len:", vcf.meta$SVLEN, " maf:", vcf.meta$MAF,")")
+
+res_meta = vcf.meta[,c("ID","sv_info","closest_gene")] %>% 
+  inner_join(metasoft_output_all, by = c("ID"="RSID")) %>%
+  left_join(pheno_data %>% rownames_to_column("pheno"), by = c("pheno")) %>%
+  filter(pheno %in% names(pheno_list)) %>%
+  select(-c(PVALUE_BE,`PVALUES_OF_STUDIES(Tab_delimitered)`,`MVALUES_OF_STUDIES(Tab_delimitered)`,V19,V20,V21,family)) %>%
+  arrange(PVALUE_RE2) 
+
+res_final = add_LD_info(res_meta)
+
+data.table::fwrite(res_final, file = paste0(data.dir,"/Meta_analysis_results.tsv.gz"))
+createDT(res_final %>% head(1000))
+```
+
+```{r}
+res_final$pval = res_final$PVALUE_RE2
+
+ci = 0.95
+df_m = res_final %>% 
+  group_by(pheno) %>%
+  mutate(observed = -log10(sort(pval)),
+         expected = -log10(ppoints(n())),
+         clower   = -log10(qbeta(p = (1 - ci) / 2, shape1 = 1:n(), shape2 = n():1)),
+         cupper   = -log10(qbeta(p = (1 + ci) / 2, shape1 = 1:n(), shape2 = n():1)),
+         lambda   = median(qchisq(1 - pval, 1)) / qchisq(0.5, 1)) %>%
+  reframe(lambda = unique(lambda), lambda_label = sprintf("%s (λ = %.2f)", pheno, lambda)) %>% distinct()
+
+data.table::fwrite(df_m, file = paste0(data.dir,"/Meta_analysislambdas.tsv.gz"))
+createDT(df_m)
+```
+
+```{r, fig.width=10, fig.height=6}
+res_final$category = NULL
+res_final$family = NULL
+res_final$description = NULL
+
+plot_multitrait_manhattan(res_final, pheno_label = "description")
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```
