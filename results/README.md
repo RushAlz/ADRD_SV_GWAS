@@ -7,7 +7,7 @@
 Here, you will find the summary statistics results for the single variant associations and meta-analysis.
 
 | File                                                                                                                                 | Description                                                    |
-|:-------------------------------------------------------------------------------------------------------------------------------------|:---------------------------------------------------------------|
+|:-----------------------------------|:-----------------------------------|
 | [MAP_association_results.tsv.gz](https://github.com/RushAlz/ADRD_SV_GWAS/tree/main/results/MAP_association_results.tsv.gz)           | Full summary statistics for SV-trait association in MAP cohort |
 | [ROS_association_results.tsv.gz](https://github.com/RushAlz/ADRD_SV_GWAS/tree/main/results/ROS_association_results.tsv.gz)           | Full summary statistics for SV-trait association in ROS cohort |
 | [ROSMAP_meta_analysis_results.tsv.gz](https://github.com/RushAlz/ADRD_SV_GWAS/tree/main/results/ROSMAP_meta_analysis_results.tsv.gz) | Full summary statistics for the meta-analysis                  |
@@ -40,7 +40,7 @@ Here, you will find the summary statistics results for the single variant associ
 > #### Meta-analysis results
 
 | Column         | Description                                                                       |
-|:---------------|:----------------------------------------------------------------------------------|
+|:-----------------------------------|:-----------------------------------|
 | *ID*           | SV ID (ROSMAP)                                                                    |
 | *sv_info*      | SV information (position, length, and MAF)                                        |
 | *closest_gene* | Closest gene                                                                      |

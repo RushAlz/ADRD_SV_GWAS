@@ -24,7 +24,7 @@ Let's consider a targeted approach to prioritize SVs near LOAD GWAS loci. We wil
 
 After focusing on SVs in LD with AD GWAS hits, we now focus on SVs with no or low LD with SNPs, suggesting that these are potential new risk loci that are not tagged by SNPs and are independent genetic risk variants.
 
--   [Genome-wide scan - focusing on SVs with no LD and found in other studies](https://rushalz.github.io/SVs_and_cognition/ADRD_SV_GWAS/analysis/06_SVs_with_no_SNPs_in_LD.html)
+-   [Genome-wide scan - focusing on SVs with no LD and found in other studies](https://rushalz.github.io/ADRD_SV_GWAS/analysis/06_SVs_with_no_SNPs_in_LD.html)
 
 ------------------------------------------------------------------------
 
