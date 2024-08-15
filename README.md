@@ -15,7 +15,7 @@
 | Subdirectory                                                               | Description                      |
 |-------------------------------|:----------------------------------------|
 | [`analysis/`](https://github.com/RushAlz/ADRD_SV_GWAS/tree/main/analysis/) | Code used in manuscript analysis |
-| [`results/`](https://github.com/RushAlz/ADRD_SV_GWAS/tree/main/results/)      | Summary statistics results       |
+| [`results/`](https://github.com/RushAlz/ADRD_SV_GWAS/tree/main/results/)   | Summary statistics results       |
 
 ------------------------------------------------------------------------
 
