@@ -2,9 +2,7 @@
 
 ------------------------------------------------------------------------
 
-**"Structural variants linked to Alzheimer's Disease and other common age-related clinical and neuropathologic traits"** [(medRxiv, 2024)](https://doi.org/10.1101/2024.08.12.24311887)
-
-| *Ricardo A Vialle, Katia de Paiva Lopes, Yan Li, Bernard Ng, Julie A Schneider, Aron S Buchman, Yanling Wang, Jose M Farfel, Lisa L Barnes, Aliza P Wingo, Thomas S Wingo, Nicholas Seyfried, Phillip L De Jager, Chris Gaiteri, Shinya Tasaki, David A Bennett*
+**"Vialle, R.A. et al. Structural variants linked to Alzheimer’s disease and other common age-related clinical and neuropathologic traits."** [Genome Med 17, 20 (2025)](https://doi.org/10.1186/s13073-025-01444-6)
 
 ------------------------------------------------------------------------
 
